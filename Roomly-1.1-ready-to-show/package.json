@@ -1,0 +1,16 @@
+{
+  "name": "roomly-office",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:integration": "node tests/integration/sql-test.mjs && node tests/integration/dom-test.mjs && node tests/integration/regression-ui.mjs",
+    "check": "node --check assets/app.js && node --check assets/api.js && node --check assets/core.js && node --check assets/app.bundle.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
