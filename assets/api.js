@@ -77,7 +77,14 @@ export const api={
    delete room.expected_bookings;delete room.policy;room.id=old?.id||crypto.randomUUID();if(!room.active&&policy==='cancel')future.forEach(b=>{b.status='cancelled';log(d,'booking.cancel',b.id);});
    d.rooms=old?d.rooms.map(x=>x.id===room.id?room:x):[...d.rooms,room];log(d,old?'room.update':'room.create',room.id);return room;
  });},
- async saveMember(member){if(live)return rpc('save_member',{p_email:member.email,p_role:member.role,p_active:member.active});return mutate(d=>{if(demoUser().role!=='admin')throw Error('Требуются права администратора.');if(member.email===demoUser().email)throw Error('Свою роль и доступ изменить нельзя.');d.members=d.members.filter(x=>x.email!==member.email);d.members.push(member);log(d,'member.update',member.email);});},
+ async listRegisteredMembers(query='',offset=0){
+ if(live)return rpc('list_registered_members',{p_query:query,p_offset:offset});
+ if(demoUser().role!=='admin')throw Error('Требуются права администратора.');
+ const d=read(),accounts=d.registeredAccounts||[{id:'demo-user',email:'alex@example.com',full_name:'Алексей Смирнов',email_confirmed:true,created_at:new Date().toISOString()},{id:'demo-admin',email:'admin@example.com',full_name:'Мария Волкова',email_confirmed:true,created_at:new Date().toISOString()},{id:'demo-awaiting',email:'new.employee@example.com',full_name:'Новый сотрудник',email_confirmed:false,created_at:new Date().toISOString()}];
+ const items=accounts.map(a=>{const m=d.members.find(x=>x.email===a.email);return {...a,registered:true,allowed:Boolean(m),role:m?.role||'employee',active:m?.active||false};}).filter(a=>(a.full_name+' '+a.email).toLowerCase().includes(query.toLowerCase())).sort((a,b)=>a.email.localeCompare(b.email));
+ return {items:items.slice(offset,offset+50),total:items.length,offset};
+ },
+ async saveMember(member){if(live)return rpc('save_member',{p_email:member.email,p_role:member.role,p_active:member.active});return mutate(d=>{if(demoUser().role!=='admin')throw Error('Требуются права администратора.');if(member.email===demoUser().email)throw Error('Свою роль и доступ изменить нельзя.');if(!['admin','employee'].includes(member.role))throw Error('Проверьте роль сотрудника.');d.members=d.members.filter(x=>x.email!==member.email);d.members.push(member);log(d,'member.update',member.email);});},
  setDemoRole(role){sessionStorage.setItem('roomly.demo.role',role);},
  resetDemo(){write(seed());},
 };
