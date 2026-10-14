@@ -1,0 +1,20 @@
+import {Window} from 'happy-dom';
+import {readFile} from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const bundle=await readFile(new URL('../../assets/app.bundle.js',import.meta.url),'utf8');
+const settle=async()=>{for(let i=0;i<8;i++)await new Promise(r=>setTimeout(r,10));};
+const tomorrow=new Date(Date.now()+86400000).toISOString().slice(0,10);
+const room={id:'room-1',name:'Тестовый зал',floor:1,capacity:8,active:true,description:'',equipment:['Видеосвязь']};
+const snap={rooms:[room],bookings:[],members:[],audit:[],revision:'1',settings:{time_zone:'Asia/Bishkek'},user:{id:'user',email:'test@example.com',full_name:'Тестовый Сотрудник',role:'employee'}};
+function prepare(config=true){const w=new Window({url:'https://roomly.example/',settings:{disableCSSFileLoading:true,disableJavaScriptFileLoading:true}});w.document.body.innerHTML='<div id="app"></div><dialog id="modal"></dialog><div id="toast"></div>';w.ROOMLY_CONFIG={supabaseUrl:config?'https://example.supabase.co':'',supabaseKey:config?'test-public':'',officeName:'Офис',timeZone:'Asia/Bishkek'};return w;}
+const submit=(w,f)=>f.dispatchEvent(new w.Event('submit',{bubbles:true,cancelable:true}));
+const missing=prepare(false);missing.eval(bundle);await settle();assert.match(missing.document.body.textContent,/Подключите базу/);assert.equal(missing.document.querySelector('[data-action="new"]'),null);await missing.happyDOM.close();
+const w=prepare();const calls=[];let saved=false;
+w.fetch=async(url,options)=>{calls.push({url,body:JSON.parse(options.body||'{}')});let payload;if(url.includes('/signup'))payload={id:'new'};else if(url.includes('/token'))payload={access_token:'test',refresh_token:'refresh',expires_in:3600};else if(url.endsWith('/app_snapshot')){if(saved)throw Error('temporary network failure');payload=snap;}else if(url.endsWith('/save_booking')){saved=true;payload={...JSON.parse(options.body).p_booking,id:'saved',owner_id:'user',status:'active'};}else payload={};return new w.Response(JSON.stringify(payload));};
+w.eval(bundle);await settle();assert.ok(w.document.querySelector('#auth-form'));assert.doesNotMatch(w.document.body.textContent,/ДЕМО|Демонстрация/);
+w.document.querySelector('[data-auth="signup"]').click();let f=w.document.querySelector('#auth-form');f.elements.full_name.value='Новый Сотрудник';f.elements.email.value='new@example.com';f.elements.password.value='Long-Test-Password';submit(w,f);await settle();assert.match(w.document.querySelector('.subtitle').textContent,/Проверьте почту/);assert.deepEqual(calls[0].body.data,{full_name:'Новый Сотрудник'});
+f=w.document.querySelector('#auth-form');f.elements.email.value='test@example.com';f.elements.password.value='Long-Test-Password';submit(w,f);await settle();assert.ok(w.document.querySelector('[data-page="rooms"]'));assert.equal(w.document.querySelector('[data-page="employees"]'),null);
+w.document.querySelector('[data-page="rooms"]').click();await settle();assert.match(w.document.body.textContent,/Видеосвязь/);
+w.document.querySelector('[data-action="account"]').click();assert.equal(w.document.querySelector('[data-role]'),null);w.document.querySelector('[data-action="close"]').click();
+w.document.querySelector('[data-action="new"]').click();f=w.document.querySelector('#booking-form');f.elements.title.value='Новая встреча';f.elements.date.value=tomorrow;f.elements.start_time.value='10:00';f.elements.end_time.value='11:00';submit(w,f);await settle();assert.equal(saved,true);assert.equal(w.document.querySelector('#modal-title').textContent,'Встреча запланирована');assert.match(w.document.querySelector('#toast').textContent,/Бронь сохранена/);await w.happyDOM.close();
+console.log('PASS no-config fails closed; real signup confirmation; login; employee navigation; no role switch; room catalog; server save remains successful after reload network error');
