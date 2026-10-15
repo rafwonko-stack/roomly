@@ -65,12 +65,56 @@ async function refresh(){
  return refreshPromise;
 }
 const rpc=(name,body={})=>request('/rest/v1/rpc/'+name,body);
+const googleRedirect='https://rafwonko-stack.github.io/roomly/';
+const verifierKey='roomly.oauth.verifier';
+const base64url=bytes=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+function acceptTokens(tokens){
+ const expires=Number(tokens.expires_at)||Math.floor(Date.now()/1000)+Number(tokens.expires_in||3600);
+ if(!tokens.access_token||!tokens.refresh_token||!Number.isFinite(expires))throw Error('Не удалось получить сессию. Повторите вход.');
+ // Store Supabase tokens only; Google provider tokens are not needed by Roomly.
+ saveSession({access_token:tokens.access_token,refresh_token:tokens.refresh_token,expires_at:expires});
+}
+function clearAuthUrl(){
+ const url=new URL(location.href);
+ for(const key of ['code','error','error_code','error_description'])url.searchParams.delete(key);
+ history.replaceState(null,'',url.pathname+url.search);
+}
+
 const api={
+ async googleLogin(){
+   if(!live)throw Error('Подключение базы не настроено. Обратитесь к администратору.');
+   if(location.origin!==new URL(googleRedirect).origin)throw Error('Для входа через Google откройте https://rafwonko-stack.github.io/roomly/.');
+   const verifier=base64url(crypto.getRandomValues(new Uint8Array(32)));
+   const challenge=base64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))));
+   try{sessionStorage.setItem(verifierKey,verifier);}catch{throw Error('Разрешите хранилище браузера для входа через Google.');}
+   const url=new URL(cfg.supabaseUrl.replace(/\/$/,'')+'/auth/v1/authorize');
+   url.search=new URLSearchParams({provider:'google',redirect_to:googleRedirect,code_challenge:challenge,code_challenge_method:'s256',prompt:'select_account'}).toString();
+   location.assign(url.href);
+ },
  async init(){
    if(!live)throw Error('Подключение базы не настроено. Администратору необходимо заполнить config.js по инструкции START.');
-   const hash=new URLSearchParams(location.hash.slice(1));
-   if(hash.get('error')){history.replaceState(null,'',location.pathname+location.search);throw Error('Ссылка подтверждения недействительна или истекла. Запросите новое письмо на странице входа.');}
-   if(hash.get('access_token')) {saveSession({access_token:hash.get('access_token'),refresh_token:hash.get('refresh_token'),expires_at:Math.floor(Date.now()/1000)+Number(hash.get('expires_in')||3600)});history.replaceState(null,'',location.pathname+location.search);}
+   const hash=new URLSearchParams(location.hash.slice(1)),query=new URLSearchParams(location.search);
+   const error=hash.get('error')||query.get('error')||hash.get('error_code')||query.get('error_code');
+   const code=query.get('code');
+   const callback=Boolean(error||query.has('code')||hash.has('access_token')||hash.has('refresh_token'));
+   if(callback){
+     // Remove credentials and one-time codes before any network request or rendering.
+     clearAuthUrl();saveSession(null);
+     try{
+       if(error){
+         const expired=(hash.get('error_code')||query.get('error_code'))==='otp_expired';
+         throw Error(expired?'Ссылка подтверждения истекла. Запросите новое письмо на странице входа.':error==='access_denied'?'Вход отменён или доступ не разрешён. Повторите вход или обратитесь к администратору.':'Не удалось завершить вход. Попробуйте снова.');
+       }
+       if(query.has('code')){
+         const verifier=sessionStorage.getItem(verifierKey);
+         if(!code||!verifier)throw Error('Сессия входа истекла. Нажмите «Продолжить с Google» снова в этой вкладке.');
+         const tokens=await request('/auth/v1/token?grant_type=pkce',{auth_code:code,code_verifier:verifier},'POST',false);
+         acceptTokens(tokens);
+       }else acceptTokens(Object.fromEntries(hash));
+       // Permissions always come from the database, never from Google metadata.
+       return await this.load();
+     }catch(e){saveSession(null);throw e;}finally{sessionStorage.removeItem(verifierKey);}
+   }
    if(!session)return null;
    return this.load();
  },
@@ -79,7 +123,7 @@ const api={
  async resend(email){return request('/auth/v1/resend',{type:'signup',email,options:{emailRedirectTo:location.origin+location.pathname}},'POST',false);},
  async recover(email){return request('/auth/v1/recover?redirect_to='+encodeURIComponent(location.origin+location.pathname),{email},'POST',false);},
  async password(password){return request('/auth/v1/user',{password},'PUT');},
- async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);}},
+ async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);sessionStorage.removeItem(verifierKey);}},
  async load(selectedDate){
    const snapshot=await rpc('app_snapshot');if(selectedDate&&snapshot.window&&(selectedDate<snapshot.window.from||selectedDate>addDays(snapshot.window.to,-6))){const start=addDays(selectedDate,-6),extra=await rpc('app_bookings_range',{p_from:start,p_to:addDays(selectedDate,6)});const byId=new Map(snapshot.bookings.map(b=>[b.id,b]));extra.forEach(b=>byId.set(b.id,b));snapshot.bookings=[...byId.values()];}lastRevision=snapshot.revision;return snapshot;
  },
@@ -112,7 +156,7 @@ function filteredRooms(){return data.rooms.filter(r=>(!floor||r.floor===+floor)&
 function filteredBookings(){return data.bookings.filter(b=>{const r=roomBy(b.room_id);return r&&(!floor||r.floor===+floor)&&(!roomFilter||b.room_id===roomFilter)&&(!statusFilter||b.status===statusFilter)&&(page!=='mine'||b.owner_id===user().id)&&(!query||`${b.title} ${b.full_name} ${r.name}`.toLowerCase().includes(query.toLowerCase()));});}
 function authScreen(error=''){
  if(!live){app.innerHTML=`<main class="setup-screen">${bankBrand()}<h1>Подключите базу данных</h1><p>Сервис работает с общей базой Supabase. Заполните supabaseUrl и публичный supabaseKey в config.js, затем обновите страницу.</p><p>Регистрация и бронирования станут доступны после подключения. Инструкция находится в файле START.md проекта.</p></main>`;return;}
- app.innerHTML=`<div class="auth-layout"><section class="auth-story">${bankBrand()}<div><div class="eyebrow" style="color:#c6dfae">ПРОСТРАНСТВО ДЛЯ ВАШИХ ИДЕЙ</div><h1>Хорошая встреча<br>начинается<br>с правильного места.</h1><p>Пять этажей. Одна команда.<br>Найдите свободный зал и соберите всех, кто нужен.</p><div class="auth-art">${roomArt(3,true)}</div></div><footer>${esc(cfg.officeName)} · Система бронирования конференц-залов</footer></section><section class="auth-form"><div class="auth-box">${bankBrand()}<h2>${authMode==='signup'?'Добро пожаловать':authMode==='resend'?'Подтвердить email':authMode==='recover'?'Восстановить доступ':'Рады видеть вас'}</h2><p class="subtitle">${authMode==='signup'?'Создайте аккаунт сотрудника. Подтвердите email, чтобы начать бронирование.':authMode==='resend'?'Повторно отправим письмо подтверждения.':authMode==='recover'?'Отправим ссылку для установки нового пароля.':'Войдите, чтобы запланировать следующую встречу.'}</p><form id="auth-form">${authMode==='signup'?'<label class="field">ФИО<input name="full_name" autocomplete="name" minlength="3" maxlength="120" required placeholder="Иван Иванов"></label>':''}<label class="field">Email<input name="email" type="email" autocomplete="email" required placeholder="you@company.com"></label>${!['recover','resend'].includes(authMode)?'<label class="field">Пароль<input name="password" type="password" autocomplete="'+(authMode==='signup'?'new-password':'current-password')+'" minlength="12" maxlength="128" required placeholder="Не менее 12 символов"></label>':''}<div id="auth-error" class="notice error" role="alert">${esc(error)}</div><button class="btn primary" type="submit">${authMode==='signup'?'Создать аккаунт':authMode==='resend'?'Отправить письмо':authMode==='recover'?'Отправить ссылку':'Войти'}${icon('chevron')}</button></form><div class="auth-links"><button class="text-btn" data-auth="${authMode==='login'?'signup':'login'}">${authMode==='login'?'Создать аккаунт':'Вернуться ко входу'}</button>${authMode==='login'?'<button class="text-btn" data-auth="recover">Забыли пароль?</button><button class="text-btn" data-auth="resend">Не пришло письмо?</button>':''}</div><div class="notice">Новый аккаунт получает права сотрудника. Назначать администраторов может только действующий администратор.</div></div></section></div>`;
+ app.innerHTML=`<div class="auth-layout"><section class="auth-story">${bankBrand()}<div><div class="eyebrow" style="color:#c6dfae">ПРОСТРАНСТВО ДЛЯ ВАШИХ ИДЕЙ</div><h1>Хорошая встреча<br>начинается<br>с правильного места.</h1><p>Пять этажей. Одна команда.<br>Найдите свободный зал и соберите всех, кто нужен.</p><div class="auth-art">${roomArt(3,true)}</div></div><footer>${esc(cfg.officeName)} · Система бронирования конференц-залов</footer></section><section class="auth-form"><div class="auth-box">${bankBrand()}<h2>${authMode==='signup'?'Добро пожаловать':authMode==='resend'?'Подтвердить email':authMode==='recover'?'Восстановить доступ':'Рады видеть вас'}</h2><p class="subtitle">${authMode==='signup'?'Создайте аккаунт сотрудника. Подтвердите email, чтобы начать бронирование.':authMode==='resend'?'Повторно отправим письмо подтверждения.':authMode==='recover'?'Отправим ссылку для установки нового пароля.':'Войдите, чтобы запланировать следующую встречу.'}</p>${['login','signup'].includes(authMode)?'<button type="button" class="btn google-auth" data-action="google-login"><svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20"><path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.88h5.38a4.61 4.61 0 0 1-2 3.02v2.51h3.24c1.9-1.75 2.98-4.33 2.98-7.36Z"/><path fill="#34A853" d="M12 22c2.7 0 4.96-.9 6.62-2.41l-3.24-2.51c-.9.6-2.04.97-3.38.97-2.6 0-4.8-1.76-5.59-4.12H3.07v2.59A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.41 13.93A6 6 0 0 1 6.1 12c0-.67.11-1.32.31-1.93V7.48H3.07A10 10 0 0 0 2 12c0 1.61.39 3.14 1.07 4.52l3.34-2.59Z"/><path fill="#EA4335" d="M12 5.95c1.47 0 2.79.51 3.82 1.52l2.86-2.87A9.6 9.6 0 0 0 12 2a10 10 0 0 0-8.93 5.48l3.34 2.59A6 6 0 0 1 12 5.95Z"/></svg><span>Продолжить с Google</span></button><div class="auth-divider"><span>или через email</span></div>':''}<form id="auth-form">${authMode==='signup'?'<label class="field">ФИО<input name="full_name" autocomplete="name" minlength="3" maxlength="120" required placeholder="Иван Иванов"></label>':''}<label class="field">Email<input name="email" type="email" autocomplete="email" required placeholder="you@company.com"></label>${!['recover','resend'].includes(authMode)?'<label class="field">Пароль<input name="password" type="password" autocomplete="'+(authMode==='signup'?'new-password':'current-password')+'" minlength="12" maxlength="128" required placeholder="Не менее 12 символов"></label>':''}<div id="auth-error" class="notice error" role="alert">${esc(error)}</div><button class="btn primary" type="submit">${authMode==='signup'?'Создать аккаунт':authMode==='resend'?'Отправить письмо':authMode==='recover'?'Отправить ссылку':'Войти'}${icon('chevron')}</button></form><div class="auth-links"><button class="text-btn" data-auth="${authMode==='login'?'signup':'login'}">${authMode==='login'?'Создать аккаунт':'Вернуться ко входу'}</button>${authMode==='login'?'<button class="text-btn" data-auth="recover">Забыли пароль?</button><button class="text-btn" data-auth="resend">Не пришло письмо?</button>':''}</div><div class="notice">Новый аккаунт получает права сотрудника. Назначать администраторов может только действующий администратор.</div></div></section></div>`;
 }
 function render(){if(!data){authScreen();return;}if(user().role!=='admin'&&['admin','employees','audit'].includes(page))page='schedule';const current=now(),mine=activeBookings().filter(b=>b.owner_id===user().id&&(b.date>current.date||b.date===current.date&&b.end_time>current.time)).length;
  const pages=[['schedule','calendar','Расписание'],['rooms','door','Конференц-залы'],['mine','clock','Мои бронирования'],...(user().role==='admin'?[['admin','settings','Управление'],['employees','users','Сотрудники'],['audit','shield','Журнал операций']]:[]),['help','help','Как это работает']];
@@ -155,6 +199,12 @@ function passwordForm(){openModal('Новый пароль','Не менее 12 
 async function reload(){const next=await api.load(date);data=next;if(data?.settings?.time_zone)cfg.timeZone=data.settings.time_zone;render();}
 function confirmCancel(id){const b=data.bookings.find(x=>x.id===id);openModal('Отменить бронирование?',b.title,`<p class="subtitle">${dateLabel(b.date)} · ${b.start_time}–${b.end_time} · ${esc(roomBy(b.room_id)?.name)}</p><div class="notice">Зал станет доступен другим сотрудникам. Запись останется в истории.</div><div id="form-error" class="notice error" role="alert"></div><div class="form-actions">${btn('Оставить бронь','close')}<button class="btn danger" data-confirm-cancel="${id}">Да, отменить</button></div>`);}
 document.addEventListener('click',async e=>{const el=e.target.closest('button');if(!el)return;try{
+ if(el.dataset.action==='google-login'){
+   if(el.disabled)return;el.disabled=true;el.setAttribute('aria-busy','true');
+   const label=el.querySelector('span');label.textContent='Переходим в Google…';
+   try{await api.googleLogin();}catch(err){$('#auth-error').textContent=err.message;el.disabled=false;el.removeAttribute('aria-busy');label.textContent='Продолжить с Google';}return;
+ }
+
  if(el.dataset.equipment){const f=$('#room-form'),input=f.elements.equipment,items=input.value.split(',').map(x=>x.trim()).filter(Boolean),item=el.dataset.equipment;input.value=items.some(x=>x.toLowerCase()===item.toLowerCase())?items.filter(x=>x.toLowerCase()!==item.toLowerCase()).join(', '):[...items,item].join(', ');syncEquipment();return;}
  if(el.dataset.page){page=el.dataset.page;query='';floor='';roomFilter='';statusFilter='active';if(page==='employees'){registered.offset=0;await loadEmployees();}else render();return;}
  if(el.dataset.view){view=el.dataset.view;render();return;}

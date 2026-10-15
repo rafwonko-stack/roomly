@@ -26,12 +26,56 @@ async function refresh(){
  return refreshPromise;
 }
 const rpc=(name,body={})=>request('/rest/v1/rpc/'+name,body);
+const googleRedirect='https://rafwonko-stack.github.io/roomly/';
+const verifierKey='roomly.oauth.verifier';
+const base64url=bytes=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+function acceptTokens(tokens){
+ const expires=Number(tokens.expires_at)||Math.floor(Date.now()/1000)+Number(tokens.expires_in||3600);
+ if(!tokens.access_token||!tokens.refresh_token||!Number.isFinite(expires))throw Error('Не удалось получить сессию. Повторите вход.');
+ // Store Supabase tokens only; Google provider tokens are not needed by Roomly.
+ saveSession({access_token:tokens.access_token,refresh_token:tokens.refresh_token,expires_at:expires});
+}
+function clearAuthUrl(){
+ const url=new URL(location.href);
+ for(const key of ['code','error','error_code','error_description'])url.searchParams.delete(key);
+ history.replaceState(null,'',url.pathname+url.search);
+}
+
 export const api={
+ async googleLogin(){
+   if(!live)throw Error('Подключение базы не настроено. Обратитесь к администратору.');
+   if(location.origin!==new URL(googleRedirect).origin)throw Error('Для входа через Google откройте https://rafwonko-stack.github.io/roomly/.');
+   const verifier=base64url(crypto.getRandomValues(new Uint8Array(32)));
+   const challenge=base64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(verifier))));
+   try{sessionStorage.setItem(verifierKey,verifier);}catch{throw Error('Разрешите хранилище браузера для входа через Google.');}
+   const url=new URL(cfg.supabaseUrl.replace(/\/$/,'')+'/auth/v1/authorize');
+   url.search=new URLSearchParams({provider:'google',redirect_to:googleRedirect,code_challenge:challenge,code_challenge_method:'s256',prompt:'select_account'}).toString();
+   location.assign(url.href);
+ },
  async init(){
    if(!live)throw Error('Подключение базы не настроено. Администратору необходимо заполнить config.js по инструкции START.');
-   const hash=new URLSearchParams(location.hash.slice(1));
-   if(hash.get('error')){history.replaceState(null,'',location.pathname+location.search);throw Error('Ссылка подтверждения недействительна или истекла. Запросите новое письмо на странице входа.');}
-   if(hash.get('access_token')) {saveSession({access_token:hash.get('access_token'),refresh_token:hash.get('refresh_token'),expires_at:Math.floor(Date.now()/1000)+Number(hash.get('expires_in')||3600)});history.replaceState(null,'',location.pathname+location.search);}
+   const hash=new URLSearchParams(location.hash.slice(1)),query=new URLSearchParams(location.search);
+   const error=hash.get('error')||query.get('error')||hash.get('error_code')||query.get('error_code');
+   const code=query.get('code');
+   const callback=Boolean(error||query.has('code')||hash.has('access_token')||hash.has('refresh_token'));
+   if(callback){
+     // Remove credentials and one-time codes before any network request or rendering.
+     clearAuthUrl();saveSession(null);
+     try{
+       if(error){
+         const expired=(hash.get('error_code')||query.get('error_code'))==='otp_expired';
+         throw Error(expired?'Ссылка подтверждения истекла. Запросите новое письмо на странице входа.':error==='access_denied'?'Вход отменён или доступ не разрешён. Повторите вход или обратитесь к администратору.':'Не удалось завершить вход. Попробуйте снова.');
+       }
+       if(query.has('code')){
+         const verifier=sessionStorage.getItem(verifierKey);
+         if(!code||!verifier)throw Error('Сессия входа истекла. Нажмите «Продолжить с Google» снова в этой вкладке.');
+         const tokens=await request('/auth/v1/token?grant_type=pkce',{auth_code:code,code_verifier:verifier},'POST',false);
+         acceptTokens(tokens);
+       }else acceptTokens(Object.fromEntries(hash));
+       // Permissions always come from the database, never from Google metadata.
+       return await this.load();
+     }catch(e){saveSession(null);throw e;}finally{sessionStorage.removeItem(verifierKey);}
+   }
    if(!session)return null;
    return this.load();
  },
@@ -40,7 +84,7 @@ export const api={
  async resend(email){return request('/auth/v1/resend',{type:'signup',email,options:{emailRedirectTo:location.origin+location.pathname}},'POST',false);},
  async recover(email){return request('/auth/v1/recover?redirect_to='+encodeURIComponent(location.origin+location.pathname),{email},'POST',false);},
  async password(password){return request('/auth/v1/user',{password},'PUT');},
- async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);}},
+ async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);sessionStorage.removeItem(verifierKey);}},
  async load(selectedDate){
    const snapshot=await rpc('app_snapshot');if(selectedDate&&snapshot.window&&(selectedDate<snapshot.window.from||selectedDate>addDays(snapshot.window.to,-6))){const start=addDays(selectedDate,-6),extra=await rpc('app_bookings_range',{p_from:start,p_to:addDays(selectedDate,6)});const byId=new Map(snapshot.bookings.map(b=>[b.id,b]));extra.forEach(b=>byId.set(b.id,b));snapshot.bookings=[...byId.values()];}lastRevision=snapshot.revision;return snapshot;
  },
