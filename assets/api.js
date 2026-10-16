@@ -1,5 +1,7 @@
 import {addDays} from './core.js';
 const cfg=window.ROOMLY_CONFIG;
+// Accept the project URL or a copied REST endpoint, without changing config.js.
+const baseUrl=String(cfg.supabaseUrl||'').trim().replace(/\/+$/,'').replace(/\/(?:rest|auth|functions)\/v1(?:\/.*)?$/,'');
 export const live=Boolean(cfg.supabaseUrl&&cfg.supabaseKey);
 let session=null,refreshPromise=null,lastRevision=null;
 try {session=JSON.parse(sessionStorage.getItem('roomly.session')||'null');} catch {}
@@ -7,10 +9,11 @@ const saveSession=s=>{session=s; s?sessionStorage.setItem('roomly.session',JSON.
 async function request(path,body,method='POST',auth=true,retry=true) {
   if(auth&&session&&session.expires_at*1000<Date.now()+60000) await refresh();
   let res;
-  try {res=await fetch(cfg.supabaseUrl.replace(/\/$/,'')+path,{method,headers:{apikey:cfg.supabaseKey,'Content-Type':'application/json',...(auth&&session?{Authorization:`Bearer ${session.access_token}`}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(15000)});} catch {throw Error('Не удалось связаться с сервером. Проверьте интернет и повторите попытку.');}
+  try {res=await fetch(baseUrl+path,{method,headers:{apikey:cfg.supabaseKey,'Content-Type':'application/json',...(auth&&session?{Authorization:`Bearer ${session.access_token}`}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(path.startsWith('/functions/')?75000:15000)});} catch {if(path.startsWith('/functions/'))throw Error('Связь прервана. Перед повторным созданием проверьте список сотрудников и Authentication → Users в Supabase.');throw Error('Не удалось связаться с сервером. Проверьте интернет и повторите попытку.');}
   let data;try {data=await res.json();}catch{data=null;}
   if(res.status===401&&auth&&session&&retry){await refresh();return request(path,body,method,auth,false);}
   if(!res.ok) {
+    if(res.status===404&&path.startsWith('/functions/'))throw Error('Сначала разверните функцию create-employee в Supabase по инструкции ADMIN-ACCOUNTS.md.');
     const message=data?.msg||data?.message||data?.error_description||'Ошибка сервера';
     if(/invalid login/i.test(message)) throw Error('Неверный email или пароль.');
     if(res.status===429)throw Error('Слишком много запросов. Подождите перед следующей попыткой.');
@@ -41,13 +44,15 @@ export const api={
  async init(){
    if(!live)throw Error('Подключение базы не настроено. Администратору необходимо заполнить config.js по инструкции START.');
    const hash=new URLSearchParams(location.hash.slice(1));
-   if(hash.get('error')){history.replaceState(null,'',location.pathname+location.search);throw Error('Ссылка восстановления недействительна или истекла. Запросите новую через «Забыли пароль?».');}
-   if(hash.get('access_token')) {saveSession({access_token:hash.get('access_token'),refresh_token:hash.get('refresh_token'),expires_at:Math.floor(Date.now()/1000)+Number(hash.get('expires_in')||3600)});history.replaceState(null,'',location.pathname+location.search);}
+   if(hash.has('access_token')||hash.has('error')||hash.get('type')==='recovery'){
+     history.replaceState(null,'',location.pathname+location.search);
+     throw Error('Вход по ссылке отключён. Используйте email и пароль, выданные администратором.');
+   }
    if(!session)return null;
    return this.load();
  },
  async login(email,password){limit('login');const s=await request('/auth/v1/token?grant_type=password',{email,password},'POST',false);acceptSession(s);return loadAuthorized();},
- async recover(email){limit('recover',1);return request('/auth/v1/recover?redirect_to='+encodeURIComponent(location.origin+location.pathname),{email},'POST',false);},
+ async createEmployee(employee){return request('/functions/v1/create-employee',employee,'POST',true,false);},
  async password(password){return request('/auth/v1/user',{password},'PUT');},
  async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);}},
  async load(selectedDate){
