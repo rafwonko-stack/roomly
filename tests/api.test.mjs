@@ -22,3 +22,5 @@ test('production adapter: auth, refresh, requests and errors',async()=>{
  responses.push(new Error('offline'));await assert.rejects(api.logout(),/связаться/);assert.equal(store.has('roomly.session'),false);
  assert.equal(responses.length,0);
 });
+
+test('only Email login and recovery APIs are exposed',()=>{for(const key of ['signup','resend','phoneLogin','phoneSignup','phoneCode','verifyPhone','linkPhone','verifyLinkedPhone','googleLogin'])assert.equal(api[key],undefined);});
