@@ -16,7 +16,7 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
         ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
       const data=await res.json().catch(()=>null);return {ok:res.ok,status:res.status,data};
     };
-    let created=null,passwordChange=false;
+    let created=null,passwordChange=false,deletion=false;
     try{
       // Verify the token AND current database permissions. User metadata is not authority.
       const identity=await call('/auth/v1/user',undefined,false,'GET');
@@ -29,6 +29,26 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
       if(reader)while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>4096){await reader.cancel();return reply(413,{message:'Слишком большой запрос.'});}parts.push(value);}
       const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}
       let input;try{input=JSON.parse(new TextDecoder().decode(bytes));}catch{return reply(400,{message:'Некорректные данные.'});}
+      if(input?.action==='delete_user'){
+        deletion=true;
+        if(Object.keys(input).some(k=>!['action','user_id'].includes(k))||typeof input.user_id!=='string'||! /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.user_id))
+          return reply(400,{message:'Укажите аккаунт для удаления.'});
+        if(input.user_id.toLowerCase()===String(identity.data.id).toLowerCase())return reply(400,{message:'Свой аккаунт удалить нельзя.'});
+        const target=await call('/auth/v1/admin/users/'+input.user_id,undefined,true,'GET');
+        if(!target.ok)return reply(404,{message:'Аккаунт не найден.'});
+        const email=typeof target.data?.email==='string'?target.data.email.trim().toLowerCase():'';
+        // Remove the Auth identity first: once it is gone nobody can sign in with it.
+        const removed=await call('/auth/v1/admin/users/'+input.user_id,undefined,true,'DELETE');
+        if(!removed.ok)return reply(removed.status===429?429:400,{message:'Аккаунт не удалён. Попробуйте ещё раз или удалите его в Supabase → Authentication → Users.'});
+        // Then drop the role/access row so a later account with the same email cannot inherit it. Bookings and audit history are kept.
+        let cleaned=false;
+        try{
+          const byId=await call('/rest/v1/members?user_id=eq.'+input.user_id,undefined,true,'DELETE');
+          const byEmail=email?await call('/rest/v1/members?email=eq.'+encodeURIComponent(email),undefined,true,'DELETE'):{ok:true};
+          cleaned=byEmail.ok&&(byId.ok||(Boolean(email)&&byId.status===400));
+        }catch{cleaned=false;}
+        return reply(200,{success:true,...(cleaned?{}:{warning:'Аккаунт удалён из Supabase Authentication, но запись о правах доступа не очищена. Проверьте таблицу members в Supabase.'})});
+      }
       if(input?.action==='set_password'){
         passwordChange=true;
         if(Object.keys(input).some(k=>!['action','user_id','password'].includes(k))||typeof input.user_id!=='string'||! /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.user_id)||typeof input.password!=='string'||input.password.length<6||input.password.length>128)
@@ -63,6 +83,7 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
       if(!activate.ok)throw Error('Activation failed');
       return reply(201,{id:created,email,role:'employee'});
     }catch{
+      if(deletion)return reply(503,{message:'Не удалось подтвердить удаление. Обновите список сотрудников: аккаунт мог быть удалён.'});
       if(passwordChange)return reply(503,{message:'Не удалось подтвердить смену пароля. Проверьте вход с новым паролем перед повтором.'});
       // Do not retry identity creation, delete users or leak upstream details/passwords.
       if(created)return reply(202,{id:created,warning:'Аккаунт создан, но завершение активации не подтверждено. Проверьте его блокировку и роль employee в Supabase перед передачей доступа. Не создавайте его повторно.'});

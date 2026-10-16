@@ -48,3 +48,32 @@ test('employee cannot reset another password; invalid target and short password 
 test('new employee accepts six characters',async()=>{
  const {handler}=setup([{body:identity},{body:actor},{body:[]},{body:{id:'new'}},{body:{success:true}},{body:{id:'new'}}]);assert.equal((await handler(request({...input,password:'110322'}))).status,201);
 });
+const removal={action:'delete_user',user_id:'11111111-2222-3333-4444-555555555555'};
+const target={id:removal.user_id,email:'Old@Example.com'};
+test('admin deletes Auth user, then clears members by id and email',async()=>{
+ const {handler,calls}=setup([{body:identity},{body:actor},{body:target},{status:200,body:{}},{body:[]},{body:[]}]);
+ const res=await handler(request(removal));assert.equal(res.status,200);const data=await res.json();assert.equal(data.success,true);assert.equal(data.warning,undefined);
+ assert.equal(calls[2].method,'GET');assert.equal(calls[3].method,'DELETE');assert.match(calls[3].url,/\/auth\/v1\/admin\/users\/11111111-2222-3333-4444-555555555555$/);assert.equal(calls[3].headers.Authorization,'Bearer server-secret');
+ assert.equal(calls[4].method,'DELETE');assert.match(calls[4].url,/\/rest\/v1\/members\?user_id=eq\./);assert.equal(calls[5].method,'DELETE');assert.match(calls[5].url,/members\?email=eq\.old%40example\.com$/);assert.equal(calls.length,6);
+});
+test('delete is refused for anonymous, employee, self, bad id and extra fields; nothing is removed',async()=>{
+ const denied=setup([{body:identity},{body:{user:{id:identity.id,role:'employee'}}}]);assert.equal((await denied.handler(request(removal))).status,403);assert.ok(denied.calls.every(c=>c.method!=='DELETE'));
+ for(const payload of [{...removal,user_id:identity.id},{...removal,user_id:'admin-id'},{...removal,user_id:'../x'},{...removal,role:'admin'}]){const {handler,calls}=setup([{body:identity},{body:actor}]);assert.equal((await handler(request(payload))).status,400);assert.equal(calls.length,2);}
+ const anon=setup([]);assert.equal((await anon.handler(request(removal,null))).status,401);assert.equal(anon.calls.length,0);
+});
+test('own account (matching UUID) cannot be deleted',async()=>{
+ const me={id:removal.user_id};const {handler,calls}=setup([{body:me},{body:{user:{id:me.id,role:'admin'}}}]);
+ assert.equal((await handler(request(removal))).status,400);assert.ok(calls.every(c=>c.method!=='DELETE'));
+});
+test('unknown target gives 404 and failed Auth delete leaves members untouched',async()=>{
+ const missing=setup([{body:identity},{body:actor},{status:404,body:{}}]);assert.equal((await missing.handler(request(removal))).status,404);assert.equal(missing.calls.length,3);
+ const failed=setup([{body:identity},{body:actor},{body:target},{status:500,body:{}}]);assert.equal((await failed.handler(request(removal))).status,400);assert.equal(failed.calls.length,4);
+});
+test('members cleanup failure after Auth delete is reported as a warning',async()=>{
+ const {handler}=setup([{body:identity},{body:actor},{body:target},{body:{}},{status:500,body:{}},{status:500,body:{}}]);
+ const res=await handler(request(removal));assert.equal(res.status,200);assert.match((await res.json()).warning,/members/);
+});
+test('network failure during delete does not leak secrets',async()=>{
+ const {handler}=setup([{body:identity},{body:actor},{body:target},new Error('server-secret')]);
+ const res=await handler(request(removal));assert.equal(res.status,503);assert.doesNotMatch(await res.text(),/server-secret/);
+});
