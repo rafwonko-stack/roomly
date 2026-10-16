@@ -33,3 +33,18 @@ test('failed permission assignment keeps new account banned and reports partial 
 test('network failure does not retry create or expose secrets',async()=>{
  const {handler,calls}=setup([{body:identity},{body:actor},{body:[]},new Error('server-secret')]);const res=await handler(request());assert.equal(res.status,503);assert.doesNotMatch(await res.text(),/server-secret|Long-Test-Password/);assert.equal(calls.length,4);
 });
+const change={action:'set_password',user_id:'11111111-2222-3333-4444-555555555555',password:'110322'};
+test('admin changes password only, retaining role and ban; digits and letters accepted',async()=>{
+ for(const password of ['110322','admins']){
+ const {handler,calls}=setup([{body:identity},{body:actor},{body:{id:change.user_id}},{body:{id:change.user_id}}]);
+ assert.equal((await handler(request({...change,password}))).status,200);
+ assert.deepEqual(calls[3].body,{password});assert.equal(calls[3].method,'PUT');assert.equal(calls.length,4);
+ }
+});
+test('employee cannot reset another password; invalid target and short password rejected',async()=>{
+ const denied=setup([{body:identity},{body:{user:{id:identity.id,role:'employee'}}}]);assert.equal((await denied.handler(request(change))).status,403);assert.equal(denied.calls.length,2);
+ for(const payload of [{...change,password:'12345'},{...change,user_id:'../admin'},{...change,role:'admin'}]){const {handler,calls}=setup([{body:identity},{body:actor}]);assert.equal((await handler(request(payload))).status,400);assert.equal(calls.length,2);}
+});
+test('new employee accepts six characters',async()=>{
+ const {handler}=setup([{body:identity},{body:actor},{body:[]},{body:{id:'new'}},{body:{success:true}},{body:{id:'new'}}]);assert.equal((await handler(request({...input,password:'110322'}))).status,201);
+});

@@ -9,11 +9,11 @@ const saveSession=s=>{session=s; s?sessionStorage.setItem('roomly.session',JSON.
 async function request(path,body,method='POST',auth=true,retry=true) {
   if(auth&&session&&session.expires_at*1000<Date.now()+60000) await refresh();
   let res;
-  try {res=await fetch(baseUrl+path,{method,headers:{apikey:cfg.supabaseKey,'Content-Type':'application/json',...(auth&&session?{Authorization:`Bearer ${session.access_token}`}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(path.startsWith('/functions/')?75000:15000)});} catch {if(path.startsWith('/functions/'))throw Error('Связь прервана. Перед повторным созданием проверьте список сотрудников и Authentication → Users в Supabase.');throw Error('Не удалось связаться с сервером. Проверьте интернет и повторите попытку.');}
+  try {res=await fetch(baseUrl+path,{method,headers:{apikey:cfg.supabaseKey,'Content-Type':'application/json',...(auth&&session?{Authorization:`Bearer ${session.access_token}`}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(path.startsWith('/functions/')?75000:15000)});} catch {if(body?.action==='set_password')throw Error('Связь прервана. Проверьте вход с новым паролем перед повтором.');if(path.startsWith('/functions/'))throw Error('Связь прервана. Перед повторным созданием проверьте список сотрудников и Authentication → Users в Supabase.');throw Error('Не удалось связаться с сервером. Проверьте интернет и повторите попытку.');}
   let data;try {data=await res.json();}catch{data=null;}
   if(res.status===401&&auth&&session&&retry){await refresh();return request(path,body,method,auth,false);}
   if(!res.ok) {
-    if(res.status===404&&path.startsWith('/functions/'))throw Error('Сначала разверните функцию create-employee в Supabase по инструкции ADMIN-ACCOUNTS.md.');
+    if(res.status===404&&path.startsWith('/functions/')&&data?.code==='NOT_FOUND')throw Error('Сначала разверните функцию create-employee в Supabase по инструкции ADMIN-ACCOUNTS.md.');
     const message=data?.msg||data?.message||data?.error_description||'Ошибка сервера';
     if(/invalid login/i.test(message)) throw Error('Неверный email или пароль.');
     if(res.status===429)throw Error('Слишком много запросов. Подождите перед следующей попыткой.');
@@ -53,6 +53,7 @@ export const api={
  },
  async login(email,password){limit('login');const s=await request('/auth/v1/token?grant_type=password',{email,password},'POST',false);acceptSession(s);return loadAuthorized();},
  async createEmployee(employee){return request('/functions/v1/create-employee',employee,'POST',true,false);},
+ async setEmployeePassword(user_id,password){return request('/functions/v1/create-employee',{action:'set_password',user_id,password},'POST',true,false);},
  async password(password){return request('/auth/v1/user',{password},'PUT');},
  async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);}},
  async load(selectedDate){

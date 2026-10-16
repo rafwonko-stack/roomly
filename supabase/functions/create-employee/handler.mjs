@@ -16,7 +16,7 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
         ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
       const data=await res.json().catch(()=>null);return {ok:res.ok,status:res.status,data};
     };
-    let created=null;
+    let created=null,passwordChange=false;
     try{
       // Verify the token AND current database permissions. User metadata is not authority.
       const identity=await call('/auth/v1/user',undefined,false,'GET');
@@ -29,11 +29,21 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
       if(reader)while(true){const {value,done}=await reader.read();if(done)break;size+=value.length;if(size>4096){await reader.cancel();return reply(413,{message:'Слишком большой запрос.'});}parts.push(value);}
       const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}
       let input;try{input=JSON.parse(new TextDecoder().decode(bytes));}catch{return reply(400,{message:'Некорректные данные.'});}
+      if(input?.action==='set_password'){
+        passwordChange=true;
+        if(Object.keys(input).some(k=>!['action','user_id','password'].includes(k))||typeof input.user_id!=='string'||! /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.user_id)||typeof input.password!=='string'||input.password.length<6||input.password.length>128)
+          return reply(400,{message:'Укажите аккаунт и пароль от 6 до 128 символов.'});
+        const target=await call('/auth/v1/admin/users/'+input.user_id,undefined,true,'GET');
+        if(!target.ok)return reply(404,{message:'Аккаунт не найден.'});
+        const updated=await call('/auth/v1/admin/users/'+input.user_id,{password:input.password},true,'PUT');
+        if(!updated.ok)return reply(updated.status===429?429:400,{message:'Пароль не изменён. Проверьте требования к паролям в настройках Supabase.'});
+        return reply(200,{success:true});
+      }
       if(!input||Array.isArray(input)||Object.keys(input).some(k=>!['email','password','full_name'].includes(k)))return reply(400,{message:'Допустимы только ФИО, email и пароль.'});
       const email=typeof input.email==='string'?input.email.trim().toLowerCase():'';
       const full_name=typeof input.full_name==='string'?input.full_name.trim():'';
-      if(email.length>254||!/^\S+@[^\s@]+\.[^\s@]+$/.test(email)||full_name.length<2||full_name.length>120||typeof input.password!=='string'||input.password.length<12||input.password.length>128)
-        return reply(400,{message:'Укажите ФИО, корректный email и пароль длиной от 12 до 128 символов.'});
+      if(email.length>254||!/^\S+@[^\s@]+\.[^\s@]+$/.test(email)||full_name.length<2||full_name.length>120||typeof input.password!=='string'||input.password.length<6||input.password.length>128)
+        return reply(400,{message:'Укажите ФИО, корректный email и пароль длиной от 6 до 128 символов.'});
       // Never reactivate a blocked pre-authorized account or inherit a reserved admin role.
       const reserved=await call('/rest/v1/members?select=role,active&email=eq.'+encodeURIComponent(email),undefined,true,'GET');
       if(!reserved.ok||!Array.isArray(reserved.data))return reply(503,{message:'Не удалось проверить права сотрудника.'});
@@ -53,6 +63,7 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
       if(!activate.ok)throw Error('Activation failed');
       return reply(201,{id:created,email,role:'employee'});
     }catch{
+      if(passwordChange)return reply(503,{message:'Не удалось подтвердить смену пароля. Проверьте вход с новым паролем перед повтором.'});
       // Do not retry identity creation, delete users or leak upstream details/passwords.
       if(created)return reply(202,{id:created,warning:'Аккаунт создан, но завершение активации не подтверждено. Проверьте его блокировку и роль employee в Supabase перед передачей доступа. Не создавайте его повторно.'});
       return reply(503,{message:'Не удалось завершить запрос. Перед повтором проверьте Authentication → Users в Supabase: аккаунт мог быть создан.'});
