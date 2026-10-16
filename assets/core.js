@@ -12,8 +12,7 @@ export function validateBooking(b, room, bookings, now=officeParts()) {
   if (!room?.active) return 'Этот зал отключён. Выберите другой.';
   if (!b.full_name?.trim() || b.full_name.trim().length<3 || b.full_name.length>120) return 'Укажите ФИО: от 3 до 120 символов.';
   if (!b.title?.trim() || b.title.length>100) return 'Укажите тему встречи: до 100 символов.';
-  if (b.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return 'Проверьте email.';
-  if (!b.email && !b.phone) return 'Укажите телефон.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(b.email)) return 'Проверьте email.';
   if (b.phone && (!/^\+?[\d ()-]{7,24}$/.test(b.phone) || b.phone.replace(/\D/g,'').length<7 || b.phone.replace(/\D/g,'').length>15)) return 'Проверьте телефон: 7–15 цифр; допустимы +, пробелы, скобки и дефисы.';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date) || Number.isNaN(Date.parse(b.date+'T12:00:00Z')) || addDays(b.date,0)!==b.date) return 'Выберите корректную дату.';
   if (b.date < now.date || b.date > addDays(now.date,30)) return 'Бронирование доступно на ближайшие 30 дней.';
