@@ -5,7 +5,7 @@
 ## Как обновить
 
 1. Загрузите файлы из архива в корень репозитория roomly с заменой одноимённых файлов. Папки сохраняются. config.js не трогайте, его в архиве нет.
-2. В Supabase → Edge Functions → create-employee → Code замените содержимое handler.mjs файлом supabase/functions/create-employee/handler.mjs из архива и нажмите Deploy. index.ts не меняется. Verify JWT оставьте выключенным. Без этого шага кнопка покажет ошибку, и ничего не удалится.
+2. В Supabase → Edge Functions → create-employee → Code замените содержимое handler.mjs файлом supabase/functions/create-employee/handler.mjs из архива и нажмите Deploy. index.ts не меняется. Verify JWT должен быть выключен: после каждого Deploy проверяйте переключатель в Edge Functions → create-employee → Details, иначе будет ошибка «Сессия истекла». Без этого шага кнопка покажет ошибку, и ничего не удалится.
 3. После успешного деплоя GitHub Pages (вкладка Actions) обновите сайт через Ctrl+F5.
 
 SQL-миграции не нужны.
@@ -21,3 +21,7 @@ SQL-миграции не нужны.
 ## Проверка
 
 Создайте тестовый аккаунт, удалите его кнопкой и убедитесь, что он исчез из Supabase → Authentication → Users и из списка сотрудников.
+
+## Если пишет «Сессия истекла»
+
+Выйдите из Roomly, нажмите Ctrl+F5 и войдите заново. Если ошибка осталась, в тексте будет код причины. Подробности видны в Supabase → Edge Functions → create-employee → Logs.

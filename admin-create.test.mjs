@@ -77,3 +77,11 @@ test('network failure during delete does not leak secrets',async()=>{
  const {handler}=setup([{body:identity},{body:actor},{body:target},new Error('server-secret')]);
  const res=await handler(request(removal));assert.equal(res.status,503);assert.doesNotMatch(await res.text(),/server-secret/);
 });
+test('session check uses the caller public key; admin operations use the service key',async()=>{
+ const {handler,calls}=setup([{body:identity},{body:actor},{body:[]},{body:{id:'n'}},{body:{success:true}},{body:{id:'n'}}]);
+ const req=new Request('https://edge.example/create-employee',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer caller',apikey:'public-key'},body:JSON.stringify(input)});
+ assert.equal((await handler(req)).status,201);assert.equal(calls[0].headers.apikey,'public-key');assert.equal(calls[1].headers.apikey,'public-key');assert.equal(calls[3].headers.apikey,'server-secret');
+});
+test('rejected session reports a diagnostic code',async()=>{
+ const {handler}=setup([{status:403,body:{error_code:'session_not_found'}}]);const res=await handler(request(input));assert.equal(res.status,401);assert.match((await res.json()).message,/session_not_found/);
+});

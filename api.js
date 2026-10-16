@@ -15,6 +15,7 @@ async function request(path,body,method='POST',auth=true,retry=true) {
   if(!res.ok) {
     if(res.status===404&&path.startsWith('/functions/')&&data?.code==='NOT_FOUND')throw Error('Сначала разверните функцию create-employee в Supabase по инструкции ADMIN-ACCOUNTS.md.');
     const message=data?.msg||data?.message||data?.error_description||'Ошибка сервера';
+    if(res.status===401&&path.startsWith('/functions/')&&!/[А-Яа-яЁё]/.test(message))throw Error('Supabase не пропускает запрос к функции create-employee. В Supabase откройте Edge Functions → create-employee → Details, отключите «Verify JWT» и нажмите Save, затем повторите.');
     if(/invalid login/i.test(message)) throw Error('Неверный email или пароль.');
     if(res.status===429)throw Error('Слишком много запросов. Подождите перед следующей попыткой.');
     if(/email not confirmed/i.test(message)) throw Error('Email аккаунта не подтверждён. Обратитесь к администратору.');
@@ -52,9 +53,9 @@ export const api={
    return this.load();
  },
  async login(email,password){limit('login');const s=await request('/auth/v1/token?grant_type=password',{email,password},'POST',false);acceptSession(s);return loadAuthorized();},
- async createEmployee(employee){return request('/functions/v1/create-employee',employee,'POST',true,false);},
- async setEmployeePassword(user_id,password){return request('/functions/v1/create-employee',{action:'set_password',user_id,password},'POST',true,false);},
- async deleteEmployee(user_id){return request('/functions/v1/create-employee',{action:'delete_user',user_id},'POST',true,false);},
+ async createEmployee(employee){return request('/functions/v1/create-employee',employee,'POST',true,true);},
+ async setEmployeePassword(user_id,password){return request('/functions/v1/create-employee',{action:'set_password',user_id,password},'POST',true,true);},
+ async deleteEmployee(user_id){return request('/functions/v1/create-employee',{action:'delete_user',user_id},'POST',true,true);},
  async password(password){return request('/auth/v1/user',{password},'PUT');},
  async logout(){try{if(live&&session)await request('/auth/v1/logout',{});}finally{saveSession(null);}},
  async load(selectedDate){

@@ -10,8 +10,10 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
     const authorization=req.headers.get('authorization');
     if(!authorization?.startsWith('Bearer '))return reply(401,{message:'Войдите в аккаунт администратора.'});
     if(!url||!serviceKey)return reply(503,{message:'Серверная функция не настроена.'});
+    // Session checks use the caller's own public key (as the browser does); only admin operations use the service key.
+    const userKey=req.headers.get('apikey')||serviceKey;
     const call=async(path,body,admin=false,method='POST')=>{
-      const res=await fetcher(url.replace(/\/$/,'')+path,{method,headers:{apikey:serviceKey,
+      const res=await fetcher(url.replace(/\/$/,'')+path,{method,headers:{apikey:admin?serviceKey:userKey,
         Authorization:admin?'Bearer '+serviceKey:authorization,'Content-Type':'application/json'},
         ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
       const data=await res.json().catch(()=>null);return {ok:res.ok,status:res.status,data};
@@ -20,7 +22,7 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
     try{
       // Verify the token AND current database permissions. User metadata is not authority.
       const identity=await call('/auth/v1/user',undefined,false,'GET');
-      if(!identity.ok||!identity.data?.id)return reply(401,{message:'Сессия истекла. Войдите снова.'});
+      if(!identity.ok||!identity.data?.id){const why=identity.data?.error_code||identity.data?.code||identity.status;console.error('Auth /user rejected the session:',identity.status,why);return reply(401,{message:'Сессия истекла. Выйдите, войдите снова и повторите. (код: '+why+')'});}
       const actor=await call('/rest/v1/rpc/app_snapshot',{});
       if(!actor.ok||actor.data?.user?.id!==identity.data.id||actor.data.user.role!=='admin')
         return reply(403,{message:'Создавать аккаунты может только действующий администратор.'});
