@@ -83,5 +83,13 @@ test('session check uses the caller public key; admin operations use the service
  assert.equal((await handler(req)).status,201);assert.equal(calls[0].headers.apikey,'public-key');assert.equal(calls[1].headers.apikey,'public-key');assert.equal(calls[3].headers.apikey,'server-secret');
 });
 test('rejected session reports a diagnostic code',async()=>{
- const {handler}=setup([{status:403,body:{error_code:'session_not_found'}}]);const res=await handler(request(input));assert.equal(res.status,401);assert.match((await res.json()).message,/session_not_found/);
+ const {handler}=setup([{status:401,body:{error_code:'bad_jwt'}}]);const res=await handler(request(input));assert.equal(res.status,401);assert.match((await res.json()).message,/bad_jwt/);
+});
+const gone={status:403,body:{error_code:'session_not_found'}};
+test('missing Auth session record is tolerated only with a verified admin token',async()=>{
+ const ok=setup([gone,{body:{user:{id:'admin-id',role:'admin'}}},{body:target},{body:{}},{body:[]},{body:[]}]);
+ assert.equal((await ok.handler(request(removal))).status,200);assert.ok(ok.calls.some(c=>c.method==='DELETE'&&c.url.includes('/admin/users/')));
+ const employee=setup([gone,{body:{user:{id:'e',role:'employee'}}}]);assert.equal((await employee.handler(request(removal))).status,403);assert.ok(employee.calls.every(c=>c.method!=='DELETE'));
+ const anon=setup([gone,{status:401,body:{}}]);assert.equal((await anon.handler(request(removal))).status,403);assert.ok(anon.calls.every(c=>c.method!=='DELETE'));
+ const self=setup([gone,{body:{user:{id:removal.user_id,role:'admin'}}}]);assert.equal((await self.handler(request(removal))).status,400);assert.ok(self.calls.every(c=>c.method!=='DELETE'));
 });

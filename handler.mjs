@@ -22,9 +22,14 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
     try{
       // Verify the token AND current database permissions. User metadata is not authority.
       const identity=await call('/auth/v1/user',undefined,false,'GET');
-      if(!identity.ok||!identity.data?.id){const why=identity.data?.error_code||identity.data?.code||identity.status;console.error('Auth /user rejected the session:',identity.status,why);return reply(401,{message:'Сессия истекла. Выйдите, войдите снова и повторите. (код: '+why+')'});}
+      // A session record can disappear on the Auth side while the signed token is still valid. Only that case is tolerated:
+      // the token is then verified by PostgREST itself (app_snapshot) and the admin role is re-read from the database.
+      const sessionGone=!identity.ok&&identity.data?.error_code==='session_not_found';
+      if(!sessionGone&&(!identity.ok||!identity.data?.id)){const why=identity.data?.error_code||identity.data?.code||identity.status;console.error('Auth /user rejected the session:',identity.status,why);return reply(401,{message:'Сессия истекла. Выйдите, войдите снова и повторите. (код: '+why+')'});}
+      if(sessionGone)console.warn('Auth session record not found; relying on verified token and database role.');
       const actor=await call('/rest/v1/rpc/app_snapshot',{});
-      if(!actor.ok||actor.data?.user?.id!==identity.data.id||actor.data.user.role!=='admin')
+      const callerId=identity.ok?identity.data.id:actor.data?.user?.id;
+      if(!actor.ok||!callerId||actor.data?.user?.id!==callerId||actor.data.user.role!=='admin')
         return reply(403,{message:'Создавать аккаунты может только действующий администратор.'});
       // Read a bounded body, without buffering arbitrary input in memory.
       const reader=req.body?.getReader();let size=0,parts=[];
@@ -35,7 +40,7 @@ export function createHandler({url,serviceKey,origin},fetcher=fetch){
         deletion=true;
         if(Object.keys(input).some(k=>!['action','user_id'].includes(k))||typeof input.user_id!=='string'||! /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.user_id))
           return reply(400,{message:'Укажите аккаунт для удаления.'});
-        if(input.user_id.toLowerCase()===String(identity.data.id).toLowerCase())return reply(400,{message:'Свой аккаунт удалить нельзя.'});
+        if(input.user_id.toLowerCase()===String(callerId).toLowerCase())return reply(400,{message:'Свой аккаунт удалить нельзя.'});
         const target=await call('/auth/v1/admin/users/'+input.user_id,undefined,true,'GET');
         if(!target.ok)return reply(404,{message:'Аккаунт не найден.'});
         const email=typeof target.data?.email==='string'?target.data.email.trim().toLowerCase():'';
