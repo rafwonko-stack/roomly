@@ -54,6 +54,7 @@ async function request(path,body,method='POST',auth=true,retry=true) {
   if(!res.ok) {
     if(res.status===404&&path.startsWith('/functions/')&&data?.code==='NOT_FOUND')throw Error('Сначала разверните функцию create-employee в Supabase по инструкции ADMIN-ACCOUNTS.md.');
     const message=data?.msg||data?.message||data?.error_description||'Ошибка сервера';
+    if(res.status===401&&path.startsWith('/functions/')&&!/[А-Яа-яЁё]/.test(message))throw Error('Supabase не пропускает запрос к функции create-employee. В Supabase откройте Edge Functions → create-employee → Details, отключите «Verify JWT» и нажмите Save, затем повторите.');
     if(/invalid login/i.test(message)) throw Error('Неверный email или пароль.');
     if(res.status===429)throw Error('Слишком много запросов. Подождите перед следующей попыткой.');
     if(/email not confirmed/i.test(message)) throw Error('Email аккаунта не подтверждён. Обратитесь к администратору.');
